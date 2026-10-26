@@ -3,5 +3,5 @@ groq
 pypdf
 pandas
 openpyxl
-plotly
+plotly>=5.0.0
 gTTS
