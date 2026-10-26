@@ -1,0 +1,7 @@
+streamlit
+groq
+pypdf
+pandas
+openpyxl
+plotly
+gTTS
