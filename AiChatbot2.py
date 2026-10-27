@@ -1,95 +1,117 @@
-# AiChatbot2.py
-# ATchatbot.AI — AI Chatbot by Aashwin Tripathi
 
-import ast
-import hashlib
-import io
-import json
-import operator
-import os
-import re
-import uuid
-from datetime import datetime
-from pathlib import Path
+        if st.session_state.get("last_voice_hash") != audio_hash:
+            if st.button("Transcribe voice"):
+                try:
+                    transcript = client.audio.transcriptions.create(
+                        file=("voice.wav", audio_bytes),
+                        model="whisper-large-v3",
+                        response_format="text",
+                    )
 
-import pandas as pd
-import plotly.express as px
-import streamlit as st
-from groq import Groq
-from pypdf import PdfReader
-from gtts import gTTS
+                    if not isinstance(transcript, str):
+                        transcript = getattr(transcript, "text", str(transcript))
 
+                    st.session_state.voice_transcript = transcript
+                    st.session_state.last_voice_hash = audio_hash
+                except Exception as exc:
+                    st.error(
+                        "Voice transcription failed. Check API access and model availability. "
+                        f"Details: {exc}"
+                    )
 
-# -------------------- CONFIGURATION --------------------
-
-APP_NAME = "ATchatbot.AI"
-HISTORY_DIR = Path("chat_history")
-HISTORY_DIR.mkdir(exist_ok=True)
-
-MODEL_NAME = "openai/gpt-oss-20b"
-
-st.set_page_config(
-    page_title=APP_NAME,
-    page_icon="🤖",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-SYSTEM_PROMPT = """
-You are ATchatbot.AI, a helpful AI assistant created by Aashwin Tripathi.
-
-If the user asks who you are, who created you, or your identity, reply exactly:
-I am Chatbot for help created by Aashwin Tripathi
-
-Be helpful, accurate, friendly, and clear.
-If you are unsure about something, say so. Do not invent facts or sources.
-Explain coding questions step by step when useful.
-"""
+        if st.session_state.get("voice_transcript"):
+            st.text_area(
+                "Transcribed text",
+                value=st.session_state.voice_transcript,
+                key="voice_text_display",
+            )
+            if st.button("Send voice question to AI"):
+                st.session_state.pending_prompt = {
+                    "prompt": st.session_state.voice_transcript,
+                    "context": None,
+                }
+                st.success("Question prepared. Open the AI Chat tab to get the answer.")
 
 
-# -------------------- STYLING --------------------
+# -------------------- CHAT TAB --------------------
 
-st.markdown("""
-<style>
-/* ATchatbot.AI: clean, high-contrast, professional light theme */
-:root {
-    color-scheme: light;
-    --at-ink: #202b27;
-    --at-muted: #5f6b65;
-    --at-paper: #f7f7f2;
-    --at-card: #ffffff;
-    --at-border: #dfe5df;
-    --at-green: #176b52;
-    --at-green-hover: #10543f;
-    --at-soft-green: #eaf4ee;
-}
+with tab_chat:
+    st.subheader("Chat with ATchatbot.AI")
 
-.stApp {
-    background: var(--at-paper);
-    color: var(--at-ink);
-}
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
 
-/* Keep the main page readable regardless of Streamlit's selected theme */
-[data-testid="stAppViewContainer"],
-[data-testid="stMain"],
-[data-testid="stMainBlockContainer"] {
-    background: var(--at-paper);
-    color: var(--at-ink);
-}
+    pending = st.session_state.get("pending_prompt")
+    typed_prompt = st.chat_input("Ask anything...")
 
-[data-testid="stHeader"] {
-    background: rgba(247, 247, 242, 0.96);
-}
+    prompt_to_process = None
+    context_to_process = None
 
-/* Sidebar */
-[data-testid="stSidebar"] {
-    background: #eef1eb;
-    border-right: 1px solid var(--at-border);
-}
-[data-testid="stSidebar"] * {
-    color: var(--at-ink);
-}
-[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
-[data-testid="stSidebar"] .stCaption {
-    color: var(--at-muted);
-}
+    if typed_prompt:
+        prompt_to_process = typed_prompt
+    elif pending:
+        prompt_to_process = pending.get("prompt")
+        context_to_process = pending.get("context")
+        st.session_state.pending_prompt = None
+
+    if prompt_to_process:
+        # Handle simple arithmetic locally.
+        calc_expression = extract_calculation(prompt_to_process)
+
+        st.session_state.messages.append({
+            "role": "user",
+            "content": prompt_to_process,
+        })
+
+        with st.chat_message("user"):
+            st.markdown(prompt_to_process)
+
+        with st.chat_message("assistant"):
+            try:
+                if calc_expression:
+                    answer = f"**Answer:** `{safe_calculate(calc_expression)}`"
+                else:
+                    with st.spinner("ATchatbot.AI is thinking..."):
+                        answer = get_answer(
+                            prompt_to_process,
+                            context=context_to_process,
+                            enable_web_search=enable_web_search,
+                        )
+
+                st.markdown(answer)
+
+                if speak_answers:
+                    try:
+                        lang = "hi" if speech_language == "Hindi" else "en"
+                        speech = io.BytesIO()
+                        gTTS(text=answer[:4500], lang=lang).write_to_fp(speech)
+                        st.audio(speech.getvalue(), format="audio/mp3")
+                    except Exception as speech_error:
+                        st.caption(f"Spoken answer unavailable: {speech_error}")
+
+            except Exception as exc:
+                answer = (
+                    "AI request failed. Check your API key, internet connection, "
+                    f"and model availability.\n\nDetails: `{exc}`"
+                )
+                st.error(answer)
+
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": answer,
+        })
+
+        if st.session_state.chat_title == "New chat":
+            st.session_state.chat_title = prompt_to_process[:45].strip()
+
+        try:
+            save_chat(
+                st.session_state.chat_id,
+                st.session_state.chat_title,
+                st.session_state.messages,
+            )
+        except OSError as exc:
+            st.warning(f"Chat save nahi ho paya: {exc}")
+
+        st.rerun()
