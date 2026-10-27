@@ -1,7 +1,9 @@
 streamlit
 groq
-pypdf
 pandas
 openpyxl
+xlrd
 plotly
+pypdf
 gTTS
+
