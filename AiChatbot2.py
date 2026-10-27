@@ -1,117 +1,96 @@
+# AiChatbot2.py
+# ATchatbot.AI — AI Chatbot by Aashwin Tripathi
 
-        if st.session_state.get("last_voice_hash") != audio_hash:
-            if st.button("Transcribe voice"):
-                try:
-                    transcript = client.audio.transcriptions.create(
-                        file=("voice.wav", audio_bytes),
-                        model="whisper-large-v3",
-                        response_format="text",
-                    )
+import ast
+import hashlib
+import io
+import json
+import operator
+import os
+import re
+import uuid
+from datetime import datetime
+from pathlib import Path
 
-                    if not isinstance(transcript, str):
-                        transcript = getattr(transcript, "text", str(transcript))
-
-                    st.session_state.voice_transcript = transcript
-                    st.session_state.last_voice_hash = audio_hash
-                except Exception as exc:
-                    st.error(
-                        "Voice transcription failed. Check API access and model availability. "
-                        f"Details: {exc}"
-                    )
-
-        if st.session_state.get("voice_transcript"):
-            st.text_area(
-                "Transcribed text",
-                value=st.session_state.voice_transcript,
-                key="voice_text_display",
-            )
-            if st.button("Send voice question to AI"):
-                st.session_state.pending_prompt = {
-                    "prompt": st.session_state.voice_transcript,
-                    "context": None,
-                }
-                st.success("Question prepared. Open the AI Chat tab to get the answer.")
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+from groq import Groq
+from pypdf import PdfReader
+from gtts import gTTS
 
 
-# -------------------- CHAT TAB --------------------
+# -------------------- CONFIGURATION --------------------
 
-with tab_chat:
-    st.subheader("Chat with ATchatbot.AI")
+APP_NAME = "ATchatbot.AI"
+HISTORY_DIR = Path("chat_history")
+HISTORY_DIR.mkdir(exist_ok=True)
 
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+MODEL_NAME = "openai/gpt-oss-20b"
 
-    pending = st.session_state.get("pending_prompt")
-    typed_prompt = st.chat_input("Ask anything...")
+st.set_page_config(
+    page_title=APP_NAME,
+    page_icon="🤖",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-    prompt_to_process = None
-    context_to_process = None
+SYSTEM_PROMPT = """
+You are ATchatbot.AI, a helpful AI assistant created by Aashwin Tripathi.
 
-    if typed_prompt:
-        prompt_to_process = typed_prompt
-    elif pending:
-        prompt_to_process = pending.get("prompt")
-        context_to_process = pending.get("context")
-        st.session_state.pending_prompt = None
+If the user asks who you are, who created you, or your identity, reply exactly:
+I am Chatbot for help created by Aashwin Tripathi
 
-    if prompt_to_process:
-        # Handle simple arithmetic locally.
-        calc_expression = extract_calculation(prompt_to_process)
+Be helpful, accurate, friendly, and clear.
+If you are unsure about something, say so. Do not invent facts or sources.
+Explain coding questions step by step when useful.
+"""
 
-        st.session_state.messages.append({
-            "role": "user",
-            "content": prompt_to_process,
-        })
 
-        with st.chat_message("user"):
-            st.markdown(prompt_to_process)
+# -------------------- STYLING --------------------
 
-        with st.chat_message("assistant"):
-            try:
-                if calc_expression:
-                    answer = f"**Answer:** `{safe_calculate(calc_expression)}`"
-                else:
-                    with st.spinner("ATchatbot.AI is thinking..."):
-                        answer = get_answer(
-                            prompt_to_process,
-                            context=context_to_process,
-                            enable_web_search=enable_web_search,
-                        )
-
-                st.markdown(answer)
-
-                if speak_answers:
-                    try:
-                        lang = "hi" if speech_language == "Hindi" else "en"
-                        speech = io.BytesIO()
-                        gTTS(text=answer[:4500], lang=lang).write_to_fp(speech)
-                        st.audio(speech.getvalue(), format="audio/mp3")
-                    except Exception as speech_error:
-                        st.caption(f"Spoken answer unavailable: {speech_error}")
-
-            except Exception as exc:
-                answer = (
-                    "AI request failed. Check your API key, internet connection, "
-                    f"and model availability.\n\nDetails: `{exc}`"
-                )
-                st.error(answer)
-
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": answer,
-        })
-
-        if st.session_state.chat_title == "New chat":
-            st.session_state.chat_title = prompt_to_process[:45].strip()
-
-        try:
-            save_chat(
-                st.session_state.chat_id,
-                st.session_state.chat_title,
-                st.session_state.messages,
-            )
-        except OSError as exc:
-            st.warning(f"Chat save nahi ho paya: {exc}")
-
-        st.rerun()
+CUSTOM_CSS = r"""
+<style>
+:root {
+    color-scheme: light;
+    --ink: #202b27;
+    --muted: #5f6b65;
+    --paper: #f7f7f2;
+    --card: #ffffff;
+    --border: #dfe5df;
+    --green: #176b52;
+    --green-hover: #10543f;
+    --soft-green: #eaf4ee;
+}
+.stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"],
+[data-testid="stMainBlockContainer"] {
+    background: var(--paper) !important;
+    color: var(--ink) !important;
+}
+[data-testid="stHeader"] { background: rgba(247,247,242,.96) !important; }
+[data-testid="stSidebar"] {
+    background: #eef1eb !important;
+    border-right: 1px solid var(--border);
+}
+[data-testid="stSidebar"] * { color: var(--ink); }
+.stMarkdown, .stMarkdown p, .stMarkdown li,
+[data-testid="stChatMessage"] p, [data-testid="stChatMessage"] li,
+label, [data-testid="stCaptionContainer"] {
+    color: var(--ink);
+}
+a { color: var(--green); }
+.hero {
+    padding: 28px 30px;
+    border: 1px solid var(--border);
+    border-left: 6px solid var(--green);
+    border-radius: 18px;
+    background: #fff;
+    box-shadow: 0 5px 20px rgba(31,48,39,.06);
+    margin-bottom: 22px;
+}
+.hero h1 {
+    margin: 0 0 8px;
+    color: #173d31 !important;
+    font-size: clamp(1.8rem, 3vw, 2.5rem);
+    font-weight: 750;
+}
